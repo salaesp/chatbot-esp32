@@ -1,0 +1,36 @@
+# ── Target ────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32s3"
+
+# ── Flash ─────────────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# ── PSRAM (8 MB Octal SPI) ────────────────────────────────────────
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ── Partition table ───────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── FreeRTOS ──────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+
+# ── LVGL ─────────────────────────────────────────────────────────
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+
+# ── WiFi ─────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_ENABLED=y
+
+# ── TLS / certificate bundle ─────────────────────────────────────
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+
+# ── HTTP client TX buffer (large – for multipart upload) ─────────
+CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH=n
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# ── Stack sizes ───────────────────────────────────────────────────
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
