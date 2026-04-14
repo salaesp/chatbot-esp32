@@ -29,8 +29,8 @@
 
 #include "mbedtls/base64.h"
 
-extern const uint8_t openai_ca_pem_start[] asm("_binary_openai_ca_pem_start");
-extern const uint8_t openai_ca_pem_end[]   asm("_binary_openai_ca_pem_end");
+extern const uint8_t ca_pem_start[] asm("_binary_ca_pem_start");
+extern const uint8_t ca_pem_end[]   asm("_binary_ca_pem_end");
 
 static const char *TAG = "voice_transcription";
 
@@ -264,11 +264,11 @@ static void build_wav_header(uint8_t *hdr, uint32_t pcm_bytes,
 }
 
 /* ================================================================
- *  OpenAI — audio input → text response (single API call)
- *  Uses gpt-4o-mini-audio-preview: transcribes + answers in one shot.
- *  WAV is base64-encoded and sent as an input_audio content part.
+ *  Gemini — audio input → text response (single API call)
+ *  Uses gemini-2.0-flash: transcribes + answers in one shot.
+ *  WAV is base64-encoded and sent as an inline_data content part.
  * ================================================================ */
-static char *ask_openai(esp_http_client_handle_t client,
+static char *ask_gemini(esp_http_client_handle_t client,
                         const uint8_t *pcm, size_t pcm_bytes)
 {
     /* ── 1. Build contiguous WAV in PSRAM ── */
@@ -298,28 +298,26 @@ static char *ask_openai(esp_http_client_handle_t client,
     heap_caps_free(wav_buf);
 
     /* ── 3. JSON prefix & suffix (base64 data streamed in between) ── */
-    char json_prefix[512];
+    char json_prefix[640];
     int prefix_len = snprintf(json_prefix, sizeof(json_prefix),
-        "{\"model\":\"%s\",\"modalities\":[\"text\"],"
-        "\"messages\":["
-          "{\"role\":\"system\",\"content\":\"Reply in under %d characters. Be concise and direct.\"},"
-          "{\"role\":\"user\",\"content\":["
-            "{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"",
-        OPENAI_MODEL, OPENAI_MAX_CHARS);
+        "{\"system_instruction\":{\"parts\":[{\"text\":\"The audio contains a spoken question or message in Spanish. Respond in Spanish in under %d characters. Be concise and direct. Then add a blank line followed by a detailed multi-line ASCII art drawing (6-10 lines, max 20 chars wide) that clearly depicts an object, animal, or scene matching the topic. Use shading characters like / \\\\ | _ . ' ` ~ # @ to create recognizable shapes with depth. Avoid simple boxes. Use only basic ASCII characters (no unicode).\"}]},"
+        "\"contents\":[{\"parts\":[{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"",
+        GEMINI_MAX_CHARS);
 
     char json_suffix[64];
     int suffix_len = snprintf(json_suffix, sizeof(json_suffix),
-        "\",\"format\":\"wav\"}}]}],\"max_tokens\":%d}", OPENAI_MAX_TOKENS);
+        "\"}}]}],\"generationConfig\":{\"maxOutputTokens\":%d}}", GEMINI_MAX_TOKENS);
 
     size_t total_body = (size_t)prefix_len + b64_out + (size_t)suffix_len;
 
-    /* ── 4. POST to OpenAI ── */
-    esp_http_client_set_url(client, "https://api.openai.com/v1/chat/completions");
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    /* ── 4. POST to Gemini (API key in URL, no Auth header needed) ── */
+    char url[512];
+    snprintf(url, sizeof(url),
+        "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+        GEMINI_MODEL, GEMINI_API_KEY);
 
-    char auth[192];
-    snprintf(auth, sizeof(auth), "Bearer %s", OPENAI_API_KEY);
-    esp_http_client_set_header(client, "Authorization", auth);
+    esp_http_client_set_url(client, url);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
 
     esp_err_t err = esp_http_client_open(client, (int)total_body);
@@ -337,9 +335,9 @@ static char *ask_openai(esp_http_client_handle_t client,
     /* ── 5. Read response ── */
     int content_len = esp_http_client_fetch_headers(client);
     int status      = esp_http_client_get_status_code(client);
-    ESP_LOGI(TAG, "OpenAI HTTP %d  content-length=%d", status, content_len);
+    ESP_LOGI(TAG, "Gemini HTTP %d  content-length=%d", status, content_len);
 
-    const size_t RESP_BUF = 4096;
+    const size_t RESP_BUF = 8192;
     char *resp = (char *)heap_caps_malloc(RESP_BUF, MALLOC_CAP_SPIRAM);
     if (!resp) { esp_http_client_close(client); return NULL; }
 
@@ -350,23 +348,26 @@ static char *ask_openai(esp_http_client_handle_t client,
         total_read += n;
     }
     resp[total_read] = '\0';
-    ESP_LOGI(TAG, "OpenAI response: %.256s", resp);
+    ESP_LOGI(TAG, "Gemini response: %.256s", resp);
 
     esp_http_client_close(client);
 
-    /* ── 6. Parse choices[0].message.content ── */
+    /* ── 6. Parse candidates[0].content.parts[0].text ── */
     cJSON *root = cJSON_Parse(resp);
     heap_caps_free(resp);
 
     if (!root) { ESP_LOGE(TAG, "JSON parse error"); return strdup("JSON parse error"); }
 
     char *result = NULL;
-    cJSON *choices = cJSON_GetObjectItem(root, "choices");
-    if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
-        cJSON *content = cJSON_GetObjectItem(
-            cJSON_GetObjectItem(cJSON_GetArrayItem(choices, 0), "message"), "content");
-        if (cJSON_IsString(content) && content->valuestring[0] != '\0') {
-            result = strdup(content->valuestring);
+    cJSON *candidates = cJSON_GetObjectItem(root, "candidates");
+    if (cJSON_IsArray(candidates) && cJSON_GetArraySize(candidates) > 0) {
+        cJSON *parts = cJSON_GetObjectItem(
+            cJSON_GetObjectItem(cJSON_GetArrayItem(candidates, 0), "content"), "parts");
+        if (cJSON_IsArray(parts) && cJSON_GetArraySize(parts) > 0) {
+            cJSON *text = cJSON_GetObjectItem(cJSON_GetArrayItem(parts, 0), "text");
+            if (cJSON_IsString(text) && text->valuestring[0] != '\0') {
+                result = strdup(text->valuestring);
+            }
         }
     }
     if (!result) {
@@ -472,8 +473,8 @@ extern "C" void app_main(void)
 
     /* ── 6. Persistent HTTPS client (standard CA store, no embedded cert) ── */
     esp_http_client_config_t http_cfg = {};
-    http_cfg.url               = "https://api.openai.com";
-    http_cfg.cert_pem          = (const char *)openai_ca_pem_start;
+    http_cfg.url               = "https://generativelanguage.googleapis.com";
+    http_cfg.cert_pem          = (const char *)ca_pem_start;
     http_cfg.timeout_ms        = 60000;
     http_cfg.buffer_size_tx    = 4096;
     http_cfg.keep_alive_enable = true;
@@ -527,14 +528,14 @@ extern "C" void app_main(void)
 
         /* ── Ask OpenAI (transcribe + answer in one call) ── */
         display_text("Thinking...");
-        char *response = ask_openai(http_client, s_rec_buf, RECORD_BYTES);
+        char *response = ask_gemini(http_client, s_rec_buf, RECORD_BYTES);
 
         if (response) {
             ESP_LOGI(TAG, "Response: %s", response);
             display_text(response);
             free(response);
         } else {
-            display_text("Error:\nOpenAI failed");
+            display_text("Error:\nGemini failed");
         }
 
         /* Show result for 10 s, then loop */

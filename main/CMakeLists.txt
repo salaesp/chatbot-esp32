@@ -16,6 +16,6 @@ idf_component_register(
         esp_timer
         espressif__cjson
         lvgl
-    EMBED_TXTFILES "openai_ca.pem"
+    EMBED_TXTFILES "ca.pem"
     INCLUDE_DIRS "./"
 )
